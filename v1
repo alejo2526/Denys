@@ -1,0 +1,96 @@
+#include <Wire.h>
+#include "MAX30105.h"  // Librería para el sensor MAX30102
+#include "heartRate.h"  // Librería para el cálculo de la frecuencia cardíaca
+
+MAX30105 particleSensor;
+
+const int BUZZER_PIN = 3;
+const byte RATE_SIZE = 4; // Aumentamos el tamaño para mayor precisión
+byte rates[RATE_SIZE]; // Array para almacenar las últimas lecturas de frecuencia cardíaca
+byte rateSpot = 0;
+long lastBeat = 0; // Tiempo en que ocurrió el último latido
+
+float beatsPerMinute;
+int beatAvg;
+int SpO2;
+
+#define FINGER_ON 7000 // Si la señal IR está por debajo de este nivel, asumimos que no hay dedo
+#define REPORTING_PERIOD_MS 1000
+
+uint32_t tsLastReport = 0;
+
+void buzzerBeep() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(1);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUZZER_PIN, OUTPUT);
+  
+  Serial.println("Iniciando Oxímetro de Pulso MAX30102");
+
+  // Inicializa el sensor MAX30102
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("FALLO: No se pudo inicializar el sensor MAX30102");
+    while (1);
+  }
+  
+  Serial.println("ÉXITO: Sensor MAX30102 inicializado correctamente");
+
+  // Configura el sensor MAX30102
+  particleSensor.setup(); 
+  particleSensor.setPulseAmplitudeRed(0x0A); // Enciende el LED rojo
+  particleSensor.setPulseAmplitudeGreen(0); // Apaga el LED verde (no lo usamos)
+}
+
+void loop() {
+  long irValue = particleSensor.getIR();
+
+  if (irValue > FINGER_ON) {
+    // Calculamos la frecuencia cardíaca
+    if (checkForBeat(irValue) == true) {
+      long delta = millis() - lastBeat;
+      lastBeat = millis();
+      beatsPerMinute = 60 / (delta / 1000.0);
+      
+      if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+        rates[rateSpot++] = (byte)beatsPerMinute;
+        rateSpot %= RATE_SIZE;
+        beatAvg = 0;
+        for (byte x = 0 ; x < RATE_SIZE ; x++)
+          beatAvg += rates[x];
+        beatAvg /= RATE_SIZE;
+        
+        // Latido detectado
+        Serial.println("¡Latido detectado!");
+        buzzerBeep();
+      }
+    }
+
+    // Cálculo simple de SpO2 (esto es una aproximación)
+    long redValue = particleSensor.getRed();
+    SpO2 = (redValue > 30000) ? 100 : 95; // Esto es una simplificación, no es preciso
+  } else {
+    // Reiniciamos valores si no se detecta el dedo
+    beatsPerMinute = 0;
+    beatAvg = 0;
+    SpO2 = 0;
+  }
+
+  // Reportamos los datos cada REPORTING_PERIOD_MS
+  if (millis() - tsLastReport > REPORTING_PERIOD_MS) {
+    Serial.print("IR=");
+    Serial.print(irValue);
+    Serial.print(", BPM=");
+    Serial.print(beatsPerMinute);
+    Serial.print(", Avg BPM=");
+    Serial.print(beatAvg);
+    Serial.print(", SpO2=");
+    Serial.print(SpO2);
+    Serial.println("%");
+
+    tsLastReport = millis();
+  }
+}
